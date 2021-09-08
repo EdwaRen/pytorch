@@ -76,8 +76,12 @@ class Tensor(torch._C._TensorBase):
                             self.q_per_channel_axis()
                     else:
                         raise RuntimeError(f"Unsupported qscheme {self.qscheme()} in deepcopy")
+                    # TODO: Once we decide to break serialization FC, no longer
+                    # need to wrap with TypedStorage
                     new_tensor = torch._utils._rebuild_qtensor(
-                        new_storage,
+                        torch.storage.TypedStorage(
+                            wrap_storage=new_storage._untyped(),
+                            dtype=self.dtype),
                         self.storage_offset(),
                         self.size(),
                         self.stride(),
@@ -106,6 +110,27 @@ class Tensor(torch._C._TensorBase):
             return handle_torch_function(Tensor.__reduce_ex__, relevant_args, self, proto)
         func, args = self._reduce_ex_internal(proto)
         return (_rebuild_from_type, (func, type(self), args, self.__dict__))
+
+    def storage(self):
+        r"""
+        storage() -> torch.Storage
+
+        Returns the underlying storage.
+        """
+        if has_torch_function_unary(self):
+            return handle_torch_function(Tensor.storage, (self,), self)
+
+        if self.dtype == torch.complex32:
+            raise RuntimeError('unsupported Storage type')
+
+        storage = self._storage()
+
+        if self.dtype != torch.uint8:
+            # If dtype is not byte, need to change it to the proper storage type
+            storage_name = torch.storage._dtype_to_pickle_storage_type_map()[self.dtype]
+            storage_class = eval(type(storage).__module__ + '.' + storage_name)
+            storage = storage_class(wrap_storage=storage)
+        return storage
 
     def _reduce_ex_internal(self, proto):
         if has_torch_function_unary(self):
@@ -153,13 +178,18 @@ class Tensor(torch._C._TensorBase):
                                     self.q_per_channel_axis())
             else:
                 raise RuntimeError(f"Serialization is not supported for tensors of type {self.qscheme()}")
-            args_qtensor = (self.storage(),
-                            self.storage_offset(),
-                            tuple(self.size()),
-                            self.stride(),
-                            quantizer_params,
-                            self.requires_grad,
-                            backward_hooks)
+            # TODO: Once we decide to break serialization FC, no longer
+            # need to wrap with TypedStorage
+            args_qtensor = (
+                torch.storage.TypedStorage(
+                    wrap_storage=self.storage()._untyped(),
+                    dtype=self.dtype),
+                self.storage_offset(),
+                tuple(self.size()),
+                self.stride(),
+                quantizer_params,
+                self.requires_grad,
+                backward_hooks)
             return (torch._utils._rebuild_qtensor, args_qtensor)
         elif self.is_sparse:
             if self.layout == torch.sparse_coo:
@@ -172,12 +202,17 @@ class Tensor(torch._C._TensorBase):
                     'sparse tensor __reduce_ex__ for layout `%s`' % (self.layout))
             return (torch._utils._rebuild_sparse_tensor, args_sparse)
         else:
-            args = (self.storage(),
-                    self.storage_offset(),
-                    tuple(self.size()),
-                    self.stride(),
-                    self.requires_grad,
-                    backward_hooks)  # previously was self._backward_hooks
+            # TODO: Once we decide to break serialization FC, no longer
+            # need to wrap with TypedStorage
+            args = (
+                torch.storage.TypedStorage(
+                    wrap_storage=self.storage()._untyped(),
+                    dtype=self.dtype),
+                self.storage_offset(),
+                tuple(self.size()),
+                self.stride(),
+                self.requires_grad,
+                backward_hooks)  # previously was self._backward_hooks
             return (torch._utils._rebuild_tensor_v2, args)
 
     def __setstate__(self, state):

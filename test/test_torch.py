@@ -33,7 +33,8 @@ from torch.testing._internal.common_utils import (
     do_test_dtypes, IS_SANDCASTLE, IS_FBCODE, IS_REMOTE_GPU, load_tests, slowTest,
     skipCUDAMemoryLeakCheckIf, BytesIOContext, noarchTest,
     skipIfRocm, skipIfNoSciPy, TemporaryFileName, TemporaryDirectoryName,
-    wrapDeterministicFlagAPITest, DeterministicGuard, make_tensor)
+    wrapDeterministicFlagAPITest, DeterministicGuard, make_tensor,
+    bytes_to_scalar)
 from multiprocessing.reduction import ForkingPickler
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
@@ -1758,6 +1759,9 @@ class AbstractTestCases:
             bools = torch.BoolStorage.from_buffer(f, 'big')
             self.assertEqual(bools.size(), 4)
             self.assertEqual(bools.tolist(), [False, True, True, True])
+            bytes = torch.ByteStorage.from_buffer(a)
+            self.assertEqual(bytes.nbytes(), 4)
+            self.assertEqual(bytes.tolist(), [1, 2, 3, 4])
 
         def test_storage_casts(self):
             storage = torch.IntStorage([-1, 0, 1, 2, 3, 4])
@@ -1846,6 +1850,7 @@ class AbstractTestCases:
                 size = 10000
                 s1 = torch.FloatStorage.from_file(filename, True, size)
                 t1 = torch.FloatTensor(s1).copy_(torch.randn(size))
+                self.assertEqual(s1.data_ptr(), torch.FloatTensor(s1).data_ptr())
 
                 # check mapping
                 s2 = torch.FloatStorage.from_file(filename, True, size)
@@ -3006,11 +3011,61 @@ class TestTorchDeviceType(TestCase):
         self.assertIsInstance(torch.inf, float)
         self.assertEqual(torch.inf, math.inf)
 
-    @dtypes(torch.float32, torch.complex64)
+    @onlyOnCPUAndCUDA
+    @dtypes(torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64,
+            torch.bool, torch.float32, torch.complex64, torch.float64,
+            torch.complex128)
+    def test_bytes_to_scalar(self, device, dtype):
+        def rand_byte():
+            if dtype == torch.bool:
+                return torch.randint(0, 2, ()).item()
+            else:
+                return torch.randint(0, 256, ()).item()
+
+        element_size = torch._utils._element_size(dtype)
+
+        for i in range(10):
+            bytes_list = [rand_byte() for _ in range(element_size)]
+            scalar = bytes_to_scalar(bytes_list, dtype, device)
+            self.assertEqual(scalar.storage()._untyped().tolist(), bytes_list)
+
+    @dtypes(torch.int8, torch.uint8, torch.int16, torch.int32, torch.int64,
+            torch.bool, torch.float32, torch.complex64, torch.float64,
+            torch.complex128)
     def test_storage(self, device, dtype):
-        v = torch.randn(3, 5, dtype=dtype, device=device)
+        v = make_tensor((3, 5), device, dtype, low=-9, high=9)
         self.assertEqual(v.storage()[0], v[0][0])
         self.assertEqual(v.storage()[14], v[2][4])
+
+        v_s = v.storage()
+
+        for el_num in range(v.numel()):
+            dim0 = el_num // v.size(1)
+            dim1 = el_num % v.size(1)
+            self.assertEqual(
+                v_s[el_num],
+                v[dim0][dim1])
+
+        v_s_byte = v.storage()._untyped()
+
+        el_size = v.element_size()
+
+        for el_num in range(v.numel()):
+            start = el_num * el_size
+            end = start + el_size
+            dim0 = el_num // v.size(1)
+            dim1 = el_num % v.size(1)
+            self.assertEqual(
+                bytes_to_scalar(v_s_byte[start:end], dtype, device),
+                v[dim0][dim1])
+
+    @onlyOnCPUAndCUDA
+    @dtypes(*torch.testing.get_all_dtypes())
+    def test_tensor_from_storage(self, device, dtype):
+        a = make_tensor((4, 5, 3), device, dtype, low=-9, high=9)
+        a_s = a.storage()
+        b = torch.tensor(a_s, device=device, dtype=dtype).reshape(a.size())
+        self.assertEqual(a, b)
 
     @dtypes(torch.float32, torch.complex64)
     def test_deepcopy(self, device, dtype):

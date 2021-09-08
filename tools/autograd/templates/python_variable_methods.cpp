@@ -1074,6 +1074,8 @@ static PyObject * TypeError_to_NotImplemented_(PyObject* self, PyObject* args, P
   return ret;
 }
 
+// TODO: Since we no longer need to check for Python storage type, I suppose
+// we probably don't need this specialized template any more
 // set_ has to be defined in the template because the c10::Storage object
 // does not have a type, and we need to make sure the Python storage object's
 // type matches the tensor's type
@@ -1107,25 +1109,18 @@ static PyObject* THPVariable_set_(
     case 1: {
       // aten::set_.source_Storage(Tensor(a!) self, Storage source) ->
       // Tensor(a!)
-      THPObjectPtr dtype_attr(PyObject_GetAttrString(_r.pyobject(0), "dtype"));
-      if (!dtype_attr) throw python_error();
-      at::ScalarType storage_scalar_type = reinterpret_cast<THPDtype*>(
-        dtype_attr.get())->scalar_type;
-      TORCH_INTERNAL_ASSERT(storage_scalar_type == self.dtype());
       auto dispatch_set_ = [](const Tensor& self, Storage source) -> Tensor {
         pybind11::gil_scoped_release no_gil;
         return self.set_(source);
       };
-      return wrap(dispatch_set_(self, _r.storage(0)));
+      at::ScalarType storage_scalar_type;
+      at::Storage storage = _r.storage(0, &storage_scalar_type);
+      TORCH_INTERNAL_ASSERT(storage_scalar_type == self.dtype() || storage_scalar_type == at::kByte);
+      return wrap(dispatch_set_(self, storage));
     }
     case 2: {
       // aten::set_.source_Storage_storage_offset(Tensor(a!) self, Storage
       // source, int storage_offset, int[] size, int[] stride=[]) -> Tensor(a!)
-      THPObjectPtr dtype_attr(PyObject_GetAttrString(_r.pyobject(0), "dtype"));
-      if (!dtype_attr) throw python_error();
-      at::ScalarType storage_scalar_type = reinterpret_cast<THPDtype*>(
-        dtype_attr.get())->scalar_type;
-      TORCH_INTERNAL_ASSERT(storage_scalar_type == self.dtype());
       auto dispatch_set_ = [](const Tensor& self,
                               Storage source,
                               int64_t storage_offset,
@@ -1134,8 +1129,11 @@ static PyObject* THPVariable_set_(
         pybind11::gil_scoped_release no_gil;
         return self.set_(source, storage_offset, size, stride);
       };
+      at::ScalarType storage_scalar_type;
+      at::Storage storage = _r.storage(0, &storage_scalar_type);
+      TORCH_INTERNAL_ASSERT(storage_scalar_type == self.dtype() || storage_scalar_type == at::kByte);
       return wrap(dispatch_set_(
-          self, _r.storage(0), _r.toInt64(1), _r.intlist(2), _r.intlist(3)));
+          self, storage, _r.toInt64(1), _r.intlist(2), _r.intlist(3)));
     }
     case 3: {
       // aten::set_.source_Tensor(Tensor(a!) self, Tensor source) -> Tensor(a!)
@@ -1227,7 +1225,7 @@ PyMethodDef variable_methods[] = {
   {"set_", castPyCFunctionWithKeywords(THPVariable_set_), METH_VARARGS | METH_KEYWORDS, NULL},
   {"short", castPyCFunctionWithKeywords(THPVariable_short), METH_VARARGS | METH_KEYWORDS, NULL},
   {"size", castPyCFunctionWithKeywords(THPVariable_size), METH_VARARGS | METH_KEYWORDS, NULL},
-  {"storage", THPVariable_storage, METH_NOARGS, NULL},
+  {"_storage", THPVariable_storage, METH_NOARGS, NULL},
   {"storage_offset", THPVariable_storage_offset, METH_NOARGS, NULL},
   {"storage_type", THPVariable_storage_type, METH_NOARGS, NULL},
   {"stride", castPyCFunctionWithKeywords(THPVariable_stride), METH_VARARGS | METH_KEYWORDS, NULL},
